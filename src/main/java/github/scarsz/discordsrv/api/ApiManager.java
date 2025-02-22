@@ -191,64 +191,77 @@ public class ApiManager extends ListenerAdapter {
             if (event.isCancelled()) {
                 cancelledGuilds++;
             } else {
-                guildCommandUpdateActions.add(
-                    guild.updateCommands().addCommands(commandSet).onErrorMap(throwable -> {
-                        errors.add(new CommandRegistrationError(guild, throwable));
-                        return null;
-                    })
-                );
+                // NON ELIMINARE I MIEI CAZZO DI COMANDI
+                guild.retrieveCommands().queue(existingCommands -> {
+                    Set<String> existingCommandNames = existingCommands.stream()
+                            .map(Command::getName)
+                            .collect(Collectors.toSet());
+
+                    List<CommandData> newCommands = commandSet.stream()
+                            .filter(cmd -> !existingCommandNames.contains(cmd.getName()))
+                            .collect(Collectors.toList());
+
+                    if (!newCommands.isEmpty()) {
+                        guild.updateCommands().addCommands(newCommands).queue(
+                                success -> DiscordSRV.info("Added " + newCommands.size() + " new command without removing existing ones in " + guild.getName()),
+                                error -> DiscordSRV.warning("Error adding new commands in " + guild.getName() + ": " + error.getMessage())
+                        );
+                    }
+                });
             }
         }
 
         int finalCancelledGuilds = cancelledGuilds;
         int finalConflictingCommands = conflictingCommands;
-        RestAction.allOf(guildCommandUpdateActions).queue(all -> {
-            int successful = all.stream().filter(Objects::nonNull).mapToInt(List::size).sum();
-            long pluginCount = conflictResolvedCommands.values().stream().map(PluginSlashCommand::getPlugin).distinct().count();
-            long registeredGuilds = all.stream().filter(Objects::nonNull).count();
-            int totalGuilds = DiscordSRV.getPlugin().getJda().getGuilds().size();
-            if (successful > 0) {
-                DiscordSRV.info("Successfully registered " + successful + " slash commands (" + finalConflictingCommands + " conflicted) for " + pluginCount + " plugins in " + registeredGuilds + "/" + totalGuilds + " guilds (" + finalCancelledGuilds + " cancelled)");
-            } else {
-                DiscordSRV.info("Cleared all pre-existing slash commands in " + registeredGuilds + "/" + totalGuilds + " guilds (" + finalCancelledGuilds + " cancelled)");
-            }
-
-            if (errors.isEmpty()) return;
-
-            for (CommandRegistrationError error : errors) {
-                Throwable exception = error.getException();
-                Guild guild = error.getGuild();
-
-                if (!(exception instanceof ErrorResponseException)) {
-                    DiscordSRV.warning("Unexpected error adding slash commands in server " + guild.getName() + ": " + exception.toString());
-                    continue;
-                }
-
-                ErrorResponseException errorResponseException = (ErrorResponseException) exception;
-                ErrorResponse response = errorResponseException.getErrorResponse();
-                if (response == ErrorResponse.MISSING_ACCESS) {
-                    DiscordSRV.warning("Missing scopes in " + guild.getName() + " (" + guild.getId() + ")");
+        if (!guildCommandUpdateActions.isEmpty()) {
+            RestAction.allOf(guildCommandUpdateActions).queue(all -> {
+                int successful = all.stream().filter(Objects::nonNull).mapToInt(List::size).sum();
+                long pluginCount = conflictResolvedCommands.values().stream().map(PluginSlashCommand::getPlugin).distinct().count();
+                long registeredGuilds = all.stream().filter(Objects::nonNull).count();
+                int totalGuilds = DiscordSRV.getPlugin().getJda().getGuilds().size();
+                if (successful > 0) {
+                    DiscordSRV.info("Successfully registered " + successful + " slash commands (" + finalConflictingCommands + " conflicted) for " + pluginCount + " plugins in " + registeredGuilds + "/" + totalGuilds + " guilds (" + finalCancelledGuilds + " cancelled)");
                 } else {
-                    DiscordSRV.warning("Failed to register slash commands in guild " + guild.getName() + " (" + guild.getId() + ") due to error: " + errorResponseException.getMeaning());
-                }
-            }
-            DiscordSRV.error("Until this is fixed, plugin slash commands won't work properly in the specified guilds.");
-
-            if (errors.stream().anyMatch(r -> r.getException() instanceof ErrorResponseException && ((ErrorResponseException) r.getException()).getErrorResponse() == ErrorResponse.MISSING_ACCESS)) {
-                String invite = "https://scarsz.me/authorize#";
-                try {
-                    invite += DiscordSRV.getPlugin().getJda().getSelfUser().getApplicationId();
-                } catch (IllegalStateException e) {
-                    invite += DiscordSRV.getPlugin().getJda().retrieveApplicationInfo().complete().getId();
+                    DiscordSRV.info("Cleared all pre-existing slash commands in " + registeredGuilds + "/" + totalGuilds + " guilds (" + finalCancelledGuilds + " cancelled)");
                 }
 
-                DiscordSRV.error("Re-authorize your bot at " + invite + " to the respective guild to grant the applications.commands slash commands scope.");
-            }
+                if (errors.isEmpty()) return;
 
-            for (CommandRegistrationError error : errors) {
-                DiscordSRV.debug(error.getException(), error.getGuild().toString());
-            }
-        });
+                for (CommandRegistrationError error : errors) {
+                    Throwable exception = error.getException();
+                    Guild guild = error.getGuild();
+
+                    if (!(exception instanceof ErrorResponseException)) {
+                        DiscordSRV.warning("Unexpected error adding slash commands in server " + guild.getName() + ": " + exception.toString());
+                        continue;
+                    }
+
+                    ErrorResponseException errorResponseException = (ErrorResponseException) exception;
+                    ErrorResponse response = errorResponseException.getErrorResponse();
+                    if (response == ErrorResponse.MISSING_ACCESS) {
+                        DiscordSRV.warning("Missing scopes in " + guild.getName() + " (" + guild.getId() + ")");
+                    } else {
+                        DiscordSRV.warning("Failed to register slash commands in guild " + guild.getName() + " (" + guild.getId() + ") due to error: " + errorResponseException.getMeaning());
+                    }
+                }
+                DiscordSRV.error("Until this is fixed, plugin slash commands won't work properly in the specified guilds.");
+
+                if (errors.stream().anyMatch(r -> r.getException() instanceof ErrorResponseException && ((ErrorResponseException) r.getException()).getErrorResponse() == ErrorResponse.MISSING_ACCESS)) {
+                    String invite = "https://scarsz.me/authorize#";
+                    try {
+                        invite += DiscordSRV.getPlugin().getJda().getSelfUser().getApplicationId();
+                    } catch (IllegalStateException e) {
+                        invite += DiscordSRV.getPlugin().getJda().retrieveApplicationInfo().complete().getId();
+                    }
+
+                    DiscordSRV.error("Re-authorize your bot at " + invite + " to the respective guild to grant the applications.commands slash commands scope.");
+                }
+
+                for (CommandRegistrationError error : errors) {
+                    DiscordSRV.debug(error.getException(), error.getGuild().toString());
+                }
+            });
+        }
     }
 
     /**
